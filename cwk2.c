@@ -29,7 +29,7 @@ int main(int argc, char **argv)
 
     if (rank == 0)
     {
-        globalData = readDataFromFile(&globalSize); 
+        globalData = readDataFromFile(&globalSize);
         if (globalData == NULL)
         {
             MPI_Finalize(); // Should really communicate to all other processes that they need to quit as well ...
@@ -62,7 +62,7 @@ int main(int argc, char **argv)
     float localMean = 0.0f;
     float localVariance = 0.0f;
     float cumulativeMean = 0.0f;
-    int localIndex; 
+    int localIndex;
 
     for (localIndex = 0; localIndex < localSize; localIndex++)
         count += localData[localIndex];
@@ -71,45 +71,38 @@ int main(int argc, char **argv)
 
     MPI_Reduce(&localMean, &cumulativeMean, 1, MPI_FLOAT, MPI_SUM, 0, MPI_COMM_WORLD);
 
-    //Calulate local variance values 
+    //Calulate local variance values
     count = 0.0f;
     for (localIndex = 0; localIndex < localSize; localIndex++)
         count += pow((localData[localIndex] - localMean), 2);
 
     localVariance = count / localSize;
 
-    int lev=1;
-    while(1 << lev <= numProcs)lev++;
-    float receivedVariance = 0.0f;
+    //Taken from lecture slides
+    int lev = 1;
+    while (1 << lev <= numProcs)
+        lev++;
+
+    float receivedVariance = 0.0f; //Local to every process
 
     int currentLevel;
-    for(currentLevel = 1; currentLevel < lev; currentLevel++){
-        int nodesToPerformOperation = numProcs/(currentLevel * 2);
-        if(rank==0)printf("Nodes 0 to %d working\n", nodesToPerformOperation-1);
-        //We only want to iterate so far up the tree
-        if(rank < nodesToPerformOperation){
-            //Even processes (including rank 0) will receive the data  
-            if(rank % 2 != 0){
-                MPI_Send(&localVariance, 1, MPI_FLOAT, rank-1, 0, MPI_COMM_WORLD);
-                printf("Rank %d sent %f to rank %d\n", rank, localVariance, rank-1);
-            }
-            if(rank % 2 == 0) {
-                float receivedVariance = 0.0f;
-                MPI_Recv(&receivedVariance, 1, MPI_FLOAT, rank+1, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-                printf("Rank %d received %f from rank %d\n", rank, receivedVariance, rank+1);
-                localVariance = (localVariance + receivedVariance) / 2;
-            }
+    for (currentLevel = 1; currentLevel < lev; currentLevel++)
+    {
+        //Even processes (including rank 0) will receive the data
+        if (rank % 2 != 0)
+        {
+            MPI_Send(&localVariance, 1, MPI_FLOAT, rank - (2 * currentLevel), 0, MPI_COMM_WORLD);
+            printf("Rank %d sent %f to rank %d\n", rank, localVariance, rank - 1);
+        }
+        if (rank % 2 == 0)
+        {
+            float receivedVariance = 0.0f;
+            MPI_Recv(&receivedVariance, 1, MPI_FLOAT, rank + (2 * currentLevel), 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+            printf("Rank %d received %f from rank %d\n", rank, receivedVariance, rank + 1);
+            localVariance = (localVariance + receivedVariance) / 2;
         }
     }
-    printf("Iterations completed\n");
-    // for(levels; levels < numberOfLevels; levels++){
-    //     if(rank <= pow(levels, 2)){
 
-    //     }else{
-    //         // MPI_Send( localVariance, 1, MPI_FLOAT, receivedVariance, 0, MPI_COMM_WORLD );
-    //     }
-        
-    // }
     //Reduce results
     float cumulativeVariance = 0.0f;
     MPI_Reduce(&localVariance, &cumulativeVariance, 1, MPI_FLOAT, MPI_SUM, 0, MPI_COMM_WORLD);
@@ -123,7 +116,7 @@ int main(int argc, char **argv)
         printf("Total time taken: %g s\n", MPI_Wtime() - startTime);
 
         finalMeanAndVariance(cumulativeMean, 0.0);
-    
+
         float sum = 0.0;
         for (i = 0; i < globalSize; i++)
             sum += globalData[i];
