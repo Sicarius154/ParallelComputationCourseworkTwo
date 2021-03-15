@@ -37,7 +37,8 @@ int main(int argc, char **argv)
         }
         printf("Rank 0: Read in data set with %d floats.\n", globalSize);
     }
-
+    double startTime = MPI_Wtime();
+    
     //Calculate and broadcast local size
     if (rank == 0)
         localSize = globalSize / numProcs;
@@ -47,7 +48,7 @@ int main(int argc, char **argv)
     float *localData = (float *)malloc(localSize * sizeof(float));
     if (!localData)
     {
-        printf("Error creating local data array on rank %d.\n", rank);
+        printf("Error creating array on rank %d.\n", rank);
         MPI_Finalize();
         return EXIT_FAILURE;
     }
@@ -55,12 +56,11 @@ int main(int argc, char **argv)
     //Scatter to other processes
     MPI_Scatter(globalData, localSize, MPI_FLOAT, localData, localSize, MPI_FLOAT, 0, MPI_COMM_WORLD);
 
-    double startTime = MPI_Wtime();
-
-    // Calculate local mean values
+    /*
+        Calculate mean values
+    */
     float count = 0.0f;
     float localMean = 0.0f;
-    float localVariance = 0.0f;
     float cumulativeMean = 0.0f;
     int localIndex;
 
@@ -71,51 +71,51 @@ int main(int argc, char **argv)
 
     MPI_Reduce(&localMean, &cumulativeMean, 1, MPI_FLOAT, MPI_SUM, 0, MPI_COMM_WORLD);
 
-    //Calulate local variance values
+    /*
+        Variance calculation using binary tree reduction
+    */
+    float localVariance = 0.0f;
     count = 0.0f;
     for (localIndex = 0; localIndex < localSize; localIndex++)
         count += pow((localData[localIndex] - localMean), 2);
 
     localVariance = count / localSize;
 
-    //Taken from lecture slides
+    //Taken from lecture slides to calculate the number of levels
     int lev = 1;
     while (1 << lev <= numProcs)
         lev++;
 
-    float receivedVariance = 0.0f; //Local to every process
-
     int currentLevel;
     for (currentLevel = 1; currentLevel < lev; currentLevel++)
     {
-        //Even processes (including rank 0) will receive the data
-        if (rank % 2 != 0)
-        {
-            MPI_Send(&localVariance, 1, MPI_FLOAT, rank - (2 * currentLevel), 0, MPI_COMM_WORLD);
-            printf("Rank %d sent %f to rank %d\n", rank, localVariance, rank - 1);
-        }
-        if (rank % 2 == 0)
-        {
+        int nodesToPerformOperation = numProcs / (currentLevel * 2);
+        if(rank < nodesToPerformOperation){ 
             float receivedVariance = 0.0f;
-            MPI_Recv(&receivedVariance, 1, MPI_FLOAT, rank + (2 * currentLevel), 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-            printf("Rank %d received %f from rank %d\n", rank, receivedVariance, rank + 1);
+            int sourceRank = rank + (numProcs / (currentLevel * 2));
+            MPI_Recv(&receivedVariance, 1, MPI_FLOAT, sourceRank, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
             localVariance = (localVariance + receivedVariance) / 2;
+        }else{
+            int destRank = rank - (numProcs / (currentLevel * 2));
+            MPI_Send(&localVariance, 1, MPI_FLOAT, destRank, 0, MPI_COMM_WORLD);
         }
     }
 
-    //Reduce results
+    //Reduce variance. This could be cleaner by putting this into the below if statement but I left it here for clarity
     float cumulativeVariance = 0.0f;
-    MPI_Reduce(&localVariance, &cumulativeVariance, 1, MPI_FLOAT, MPI_SUM, 0, MPI_COMM_WORLD);
+    if(rank == 0) cumulativeVariance = localVariance;
 
+    /*
+        Present results and clean up
+    */
     if (rank == 0)
     {
 
         cumulativeMean = cumulativeMean / numProcs;
-        cumulativeVariance = cumulativeVariance / numProcs;
 
         printf("Total time taken: %g s\n", MPI_Wtime() - startTime);
 
-        finalMeanAndVariance(cumulativeMean, 0.0);
+        finalMeanAndVariance(cumulativeMean, cumulativeVariance);
 
         float sum = 0.0;
         for (i = 0; i < globalSize; i++)
