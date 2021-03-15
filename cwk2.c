@@ -1,45 +1,18 @@
-//
-// Starting code for the MPI coursework.
-//
-// See lectures and/or the worksheet corresponding to this part of the module for instructions
-// on how to build and launch MPI programs. A simple makefile has also been included (usage optional).
-//
 
-//
-// Includes.
-//
 #include <math.h>
-// Standard includes.
 #include <stdio.h>
 #include <stdlib.h>
-
-// The MPI library.
 #include <mpi.h>
-
-// Some extra routines for this coursework. DO NOT MODIFY OR REPLACE THESE ROUTINES,
-// as this file will be replaced with a different version for assessment.
 #include "cwk2_extra.h"
 
-//
-// Main.
-//
 int main(int argc, char **argv)
 {
     int i;
-
-    //
-    // Initialisation.
-    //
-
-    // Initialise MPI and get the rank of this process, and the total number of processes.
     int rank, numProcs;
     MPI_Init(&argc, &argv);
     MPI_Comm_size(MPI_COMM_WORLD, &numProcs);
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
 
-    // Check that the number of processes is a power of 2, but <=256, so the data set, which is a multiple of 256 in length,
-    // is also a multiple of the number of processes. If using OpenMPI, you may need to add the argument '--oversubscribe'
-    // when launnching the executable, to allow more processes than you have cores.
     if ((numProcs & (numProcs - 1)) != 0 || numProcs > 256)
     {
         // Only display the error message from one processes, but finalise and quit all of them.
@@ -50,15 +23,13 @@ int main(int argc, char **argv)
         return EXIT_FAILURE;
     }
 
-    // Load the full data set onto rank 0.
     float *globalData = NULL;
     int globalSize = 0;
     int localSize = 0;
 
     if (rank == 0)
     {
-        globalData = readDataFromFile(&globalSize); // globalData must be free'd on rank 0 before quitting.
-
+        globalData = readDataFromFile(&globalSize); 
         if (globalData == NULL)
         {
             MPI_Finalize(); // Should really communicate to all other processes that they need to quit as well ...
@@ -66,14 +37,11 @@ int main(int argc, char **argv)
         }
         printf("Rank 0: Read in data set with %d floats.\n", globalSize);
     }
-    // Calculate the number of floats per process. Note that only rank 0 has the correct value of localSize
-    // at this point in the code. This will somehow need to be communicated to all other processes. Note also
-    // that we can assume that globalSize is a multiple of numProcs.
-    // Collective version: Use MPI_Bcast();
 
     //Calculate and broadcast local size
     if (rank == 0)
         localSize = globalSize / numProcs;
+
     MPI_Bcast(&localSize, 1, MPI_FLOAT, 0, MPI_COMM_WORLD);
 
     float *localData = (float *)malloc(localSize * sizeof(float));
@@ -84,77 +52,83 @@ int main(int argc, char **argv)
         return EXIT_FAILURE;
     }
 
-    //scatter to other processes
+    //Scatter to other processes
     MPI_Scatter(globalData, localSize, MPI_FLOAT, localData, localSize, MPI_FLOAT, 0, MPI_COMM_WORLD);
 
-    //For debugging
-    printf("Rank %d has %d items\n", rank, localSize);
-
-    // Start the timing now, after the data has been loaded (will only output on rank 0).
     double startTime = MPI_Wtime();
 
-    //
-    // Task 1: Calculate the mean using all available processes.
-    //
+    // Calculate local mean values
     float count = 0.0f;
     float localMean = 0.0f;
     float localVariance = 0.0f;
+    float cumulativeMean = 0.0f;
+    int localIndex; 
 
-    int localIndex = 0;
-    for (; localIndex < localSize; localIndex++)
+    for (localIndex = 0; localIndex < localSize; localIndex++)
         count += localData[localIndex];
 
     localMean = count / localSize;
 
-    //
-    // Task 2. Calculate the variance using all processes.
-    //
-    localIndex = 0;
+    MPI_Reduce(&localMean, &cumulativeMean, 1, MPI_FLOAT, MPI_SUM, 0, MPI_COMM_WORLD);
+
+    //Calulate local variance values 
     count = 0.0f;
-    for (; localIndex < localSize; localIndex++)
+    for (localIndex = 0; localIndex < localSize; localIndex++)
         count += pow((localData[localIndex] - localMean), 2);
 
     localVariance = count / localSize;
 
-    printf("Rank %d has count %f and mean %f and variance %f\n", rank, count, localMean, localVariance);
+    int lev=1;
+    while(1 << lev <= numProcs)lev++;
+    float receivedVariance = 0.0f;
 
-    //Gather the results from the processes to rank 0, sum them.
+    int currentLevel;
+    for(currentLevel = 1; currentLevel < lev; currentLevel++){
+        int nodesToPerformOperation = numProcs/(currentLevel * 2);
+        if(rank==0)printf("Nodes 0 to %d working\n", nodesToPerformOperation-1);
+        //We only want to iterate so far up the tree
+        if(rank < nodesToPerformOperation){
+            //Even processes (including rank 0) will receive the data  
+            if(rank % 2 != 0){
+                MPI_Send(&localVariance, 1, MPI_FLOAT, rank-1, 0, MPI_COMM_WORLD);
+                printf("Rank %d sent %f to rank %d\n", rank, localVariance, rank-1);
+            }
+            if(rank % 2 == 0) {
+                float receivedVariance = 0.0f;
+                MPI_Recv(&receivedVariance, 1, MPI_FLOAT, rank+1, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+                printf("Rank %d received %f from rank %d\n", rank, receivedVariance, rank+1);
+                localVariance = (localVariance + receivedVariance) / 2;
+            }
+        }
+    }
+    printf("Iterations completed\n");
+    // for(levels; levels < numberOfLevels; levels++){
+    //     if(rank <= pow(levels, 2)){
 
-    float cumulativeMean = 0.0f;
+    //     }else{
+    //         // MPI_Send( localVariance, 1, MPI_FLOAT, receivedVariance, 0, MPI_COMM_WORLD );
+    //     }
+        
+    // }
+    //Reduce results
     float cumulativeVariance = 0.0f;
-    MPI_Reduce(&localMean, &cumulativeMean, 1, MPI_FLOAT, MPI_SUM, 0, MPI_COMM_WORLD);
     MPI_Reduce(&localVariance, &cumulativeVariance, 1, MPI_FLOAT, MPI_SUM, 0, MPI_COMM_WORLD);
 
-    cumulativeMean = cumulativeMean / numProcs;
-    cumulativeVariance = cumulativeVariance / numProcs;
-
-    if(rank == 0) printf("Cumulative mean: %f Cumulative variance: %f\n", cumulativeMean, cumulativeVariance);
-
-    //
-    // Output the results alongside a serial check.
-    //
     if (rank == 0)
     {
-        // Output the results of the timing now, before moving onto other calculations.
+
+        cumulativeMean = cumulativeMean / numProcs;
+        cumulativeVariance = cumulativeVariance / numProcs;
+
         printf("Total time taken: %g s\n", MPI_Wtime() - startTime);
 
-        // Your code MUST call this function after the mean and variance have been calculated using your parallel algorithms.
-        // Do not modify the function itself (which is defined in 'cwk2_extra.h'), as it will be replaced with a different
-        // version for the purpose of assessing. Also, don't just put the values from serial calculations here or you will lose marks.
-        finalMeanAndVariance(0.0, 0.0);
-        // You should replace the first argument with your mean, and the second with your variance.
-
-        // Check the answers against the serial calculations. This also demonstrates how to perform the calculations
-        // in serial, which you may find useful. Note that small differences in floating point calculations between
-        // equivalent parallel and serial codes are possible, as explained in Lecture 11.
-
-        // Mean.
+        finalMeanAndVariance(cumulativeMean, 0.0);
+    
         float sum = 0.0;
         for (i = 0; i < globalSize; i++)
             sum += globalData[i];
         float mean = sum / globalSize;
 
-        // Variance.
         float sumSqrd = 0.0;
         for (i = 0; i < globalSize; i++)
             sumSqrd += (globalData[i] - mean) * (globalData[i] - mean);
@@ -163,9 +137,6 @@ int main(int argc, char **argv)
         printf("SERIAL CHECK: Mean=%g and Variance=%g.\n", mean, variance);
     }
 
-    //
-    // Free all resources (including any memory you have dynamically allocated), then quit.
-    //
     if (rank == 0)
         free(globalData);
 
